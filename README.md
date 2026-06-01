@@ -1,4 +1,4 @@
-# Ledger — Personal Expense & Budget Tracker
+# Ledger — Personal Expense & Budget Tracker 
 
 A web app to track monthly income, log categorised expenses, set overall and per-category
 budgets (with over-budget warnings), and view reports and income/spending/savings trends.
