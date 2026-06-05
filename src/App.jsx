@@ -387,11 +387,11 @@ function Expenses() {
 
         {(!data.expenses || data.expenses.length === 0) ? <div className="empty">No expenses logged for {fmtMonth(data.month_key)} yet.</div> :
           filtered.length === 0 ? <div className="empty">No expenses match your filters.</div> :
-          <table style={{ marginTop: 14 }}>
+          <table className="exp-table" style={{ marginTop: 14 }}>
             <thead><tr><th>Description</th><th>Category</th><th>Date</th><th style={{ textAlign: 'right' }}>Amount</th><th style={{ textAlign: 'center' }}>Unnec.</th><th style={{ textAlign: 'right', width: 90 }}></th></tr></thead>
             <tbody>{filtered.map(e => { const c = catById(CATS, e.category)
               if (editId === e.id) return (
-                <tr key={e.id}>
+                <tr key={e.id} className="edit-row">
                   <td><input value={edit.name} onChange={ev => setEdit(p => ({ ...p, name: ev.target.value }))} style={editStyle} /></td>
                   <td><select value={edit.category} onChange={ev => setEdit(p => ({ ...p, category: ev.target.value }))} style={editStyle}>{CATS.map(cc => <option key={cc.id} value={cc.id}>{cc.name}</option>)}</select></td>
                   <td><input type="date" value={edit.date} onChange={ev => setEdit(p => ({ ...p, date: ev.target.value }))} style={editStyle} /></td>
@@ -403,14 +403,14 @@ function Expenses() {
                 </tr>)
               return (
               <tr key={e.id}>
-                <td style={{ fontWeight: 500 }}>{e.name}{e.recurring && <span className="pill" style={{ marginLeft: 8, background: 'var(--gold-bg)', color: 'var(--gold)' }}>↻</span>}{e.unnecessary && <span className="unnec-badge" style={{ marginLeft: 8 }}>⚠</span>}</td>
-                <td><span className="tag" style={{ background: c.color + '22', color: c.color }}>{c.name}</span></td>
-                <td style={{ color: 'var(--muted)' }}>{new Date(e.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}</td>
-                <td style={{ textAlign: 'right', fontWeight: 500 }} className="num">{INR(e.amount)}</td>
-                <td style={{ textAlign: 'center' }}>
+                <td data-label="Description" style={{ fontWeight: 500 }}>{e.name}{e.recurring && <span className="pill" style={{ marginLeft: 8, background: 'var(--gold-bg)', color: 'var(--gold)' }}>↻</span>}{e.unnecessary && <span className="unnec-badge" style={{ marginLeft: 8 }}>⚠</span>}</td>
+                <td data-label="Category"><span className="tag" style={{ background: c.color + '22', color: c.color }}>{c.name}</span></td>
+                <td data-label="Date" style={{ color: 'var(--muted)' }}>{new Date(e.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}</td>
+                <td data-label="Amount" style={{ textAlign: 'right', fontWeight: 500 }} className="num">{INR(e.amount)}</td>
+                <td data-label="Unnecessary" style={{ textAlign: 'center' }}>
                   <input type="checkbox" checked={!!e.unnecessary} onChange={() => toggleUnnec(e.id)}
                     title="Mark this expense as unnecessary" style={{ width: 17, height: 17, accentColor: 'var(--red)', cursor: 'pointer' }} /></td>
-                <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                <td data-label="" style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
                   <button className="icon-btn" onClick={() => startEdit(e)} title="Edit">✎</button>
                   <button className="icon-btn" onClick={() => remove(e.id)} title="Delete">✕</button></td>
               </tr>) })}

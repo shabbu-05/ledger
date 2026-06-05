@@ -113,9 +113,9 @@
   .check{display:inline-flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--ink-soft);user-select:none}
   .check input{width:18px;height:18px;accent-color:var(--red);cursor:pointer}
   .unnec-badge{font-size:10.5px;font-weight:600;padding:2px 8px;border-radius:12px;background:var(--red-bg);color:var(--red);display:inline-flex;align-items:center;gap:4px}
-  @media(max-width:720px){
-    .add-row{grid-template-columns:1fr 1fr}
-    .main{padding:16px 14px}
+  @media(max-width:760px){
+    .main{padding:16px 13px}
+    /* header: two tidy rows */
     .topbar{flex-wrap:wrap;gap:10px;padding:10px 14px;row-gap:10px}
     .topbar .brand{order:1}
     .topbar-actions{order:2;margin-left:auto;gap:10px}
@@ -123,16 +123,50 @@
     .tabs::-webkit-scrollbar{display:none}
     .tab{flex:none;white-space:nowrap}
     .user-email{display:none}
+    /* cards & spacing */
     .grid{gap:12px !important}
-    .stat{padding:16px 18px}
-    .stat .val{font-size:24px}
-    .card{padding:18px;border-radius:14px}
+    .card{padding:16px;border-radius:14px}
     .card h2{font-size:17px}
-    .grid[style*="repeat"]{grid-template-columns:1fr !important}
     .row{gap:12px}
+    /* stat cards full width, tighter */
+    .stat{padding:15px 16px}
+    .stat .val{font-size:23px}
+    .grid[style*="repeat"]{grid-template-columns:1fr 1fr !important}
+    /* every multi-field row stacks to one column */
+    .add-row{grid-template-columns:1fr !important}
+    /* segmented controls scroll instead of overflowing */
+    .seg{overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;max-width:100%}
+    .seg::-webkit-scrollbar{display:none}
+    .seg button{flex:none;white-space:nowrap}
+    /* tables: let them scroll horizontally inside their card, never break the page */
+    .card table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch;white-space:nowrap;scrollbar-width:thin}
+    th,td{padding:9px 8px;font-size:13px}
+    /* Expenses list: stack each row into a labelled card (much nicer than scrolling on a phone) */
+    .exp-table{display:block;overflow:visible;white-space:normal}
+    .exp-table thead{display:none}
+    .exp-table tbody{display:block}
+    .exp-table tbody tr:not(.edit-row){display:block;border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:10px;background:var(--card)}
+    .exp-table tbody tr:not(.edit-row):hover{background:var(--card)}
+    .exp-table tr:not(.edit-row) td{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:5px 0;border:none;text-align:left !important;font-size:13.5px}
+    .exp-table tr:not(.edit-row) td::before{content:attr(data-label);font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);font-weight:600;flex:none}
+    .exp-table tr:not(.edit-row) td[data-label=""]{justify-content:flex-end;padding-top:8px;margin-top:4px;border-top:1px solid var(--line)}
+    .exp-table tr:not(.edit-row) td[data-label=""]::before{display:none}
+    /* edit row on mobile: stack the inputs */
+    .exp-table tr.edit-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;border:1px solid var(--gold);border-radius:12px;padding:12px;margin-bottom:10px}
+    .exp-table tr.edit-row td{display:block;padding:0;border:none}
+    .exp-table tr.edit-row td:first-child{grid-column:1 / -1}
+    .exp-table tr.edit-row td:last-child{grid-column:1 / -1;text-align:right}
+    /* month navigator full width + title smaller */
+    .month-nav{width:100%;justify-content:space-between}
+    h1{font-size:26px !important}
+    /* charts a touch shorter on phones */
+    canvas{max-height:300px}
   }
-  @media(max-width:420px){
+  @media(max-width:430px){
     .topbar-actions{gap:8px}
     .btn-ghost{padding:0 10px !important}
-    .stat .val{font-size:22px}
+    .stat .val{font-size:21px}
+    /* single-column stat cards on the smallest screens */
+    .grid[style*="repeat"]{grid-template-columns:1fr !important}
+    .card{padding:14px}
   }
