@@ -113,6 +113,9 @@
   .check{display:inline-flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--ink-soft);user-select:none}
   .check input{width:18px;height:18px;accent-color:var(--red);cursor:pointer}
   .unnec-badge{font-size:10.5px;font-weight:600;padding:2px 8px;border-radius:12px;background:var(--red-bg);color:var(--red);display:inline-flex;align-items:center;gap:4px}
+  .chip{display:inline-flex;align-items:center;gap:6px;padding:7px 12px;border-radius:999px;border:1.5px solid var(--line-2);font-size:12.5px;font-weight:500;cursor:pointer;transition:.15s;white-space:nowrap}
+  .chip:hover{border-color:var(--gold)}
+  .sel-row{background:var(--gold-bg) !important}
   @media(max-width:760px){
     .main{padding:16px 13px}
     /* header: two tidy rows */

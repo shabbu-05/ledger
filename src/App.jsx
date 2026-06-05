@@ -102,6 +102,8 @@ function Shell({ user, onLogout }) {
   const [bump, setBump] = useState(0)
   const [settings, setSettings] = useState(null)
   const [theme, setTheme] = useState(() => localStorage.getItem('ledger_theme') || 'light')
+  const [allMonths, setAllMonths] = useState([])
+  const [drillCat, setDrillCat] = useState(null) // category id to pre-filter Expenses with
 
   // Load settings once on mount, sync module globals.
   useEffect(() => { (async () => {
@@ -136,11 +138,17 @@ function Shell({ user, onLogout }) {
   const persist = async next => { const saved = await api.upsertMonth(user.id, mk, next); setData(saved) }
   const showToast = (msg, type = 'success') => { setToast({ msg, type }); setTimeout(() => setToast(null), 3200) }
 
+  // Load all months for dashboard insights (average, cumulative savings) and refresh on changes.
+  useEffect(() => { if (!settings) return; let live = true; (async () => { const ms = await api.listMonths(user.id); if (live) setAllMonths(ms) })(); return () => { live = false } }, [bump, settings, data])
+
+  // Jump to the Expenses tab pre-filtered to a category (donut drill-down).
+  const drillToCategory = cid => { setDrillCat(cid); setTab('expenses') }
+
   if (!settings) return <div className="empty" style={{ paddingTop: 80 }}>Loading…</div>
 
   const tabs = [['dashboard', 'Dashboard'], ['expenses', 'Expenses'], ['budgets', 'Budgets'], ['reports', 'Reports'], ['settings', 'Settings']]
   return (
-    <Ctx.Provider value={{ user, mk, data, persist, showToast, theme, setTheme, settings, saveSettings, cats: settings.categories, refresh: () => setBump(b => b + 1) }}>
+    <Ctx.Provider value={{ user, mk, data, persist, showToast, theme, setTheme, settings, saveSettings, cats: settings.categories, refresh: () => setBump(b => b + 1), allMonths, setTab, drillToCategory, drillCat, setDrillCat }}>
       <div className="app">
         {toast && <div className={'toast toast-' + toast.type}><span style={{ fontSize: 17 }}>{toast.type === 'warn' ? '⚠' : '✓'}</span>{toast.msg}</div>}
         <div className="topbar">
@@ -196,32 +204,93 @@ function useTotals(data) {
 
 // ---------------- dashboard ----------------
 function Dashboard() {
-  const { data, persist } = useContext(Ctx)
+  const { data, persist, showToast, allMonths, drillToCategory } = useContext(Ctx)
   const t = useTotals(data)
   const [salaryInput, setSalaryInput] = useState(data.salary || '')
   useEffect(() => setSalaryInput(data.salary || ''), [data.month_key])
   const savingsRate = t.salary > 0 ? Math.round((t.savings / t.salary) * 100) : 0
   const topCats = Object.entries(t.byCat).sort((a, b) => b[1] - a[1]).slice(0, 5)
+
+  // --- insight: this month vs average of prior months (up to 6) ---
+  const priorMonths = allMonths.filter(m => m.month_key < data.month_key).slice(-6)
+  const priorSpends = priorMonths.map(m => (m.expenses || []).reduce((s, e) => s + e.amount, 0))
+  const avgPrior = priorSpends.length ? priorSpends.reduce((a, b) => a + b, 0) / priorSpends.length : 0
+  const vsAvgPct = avgPrior > 0 ? Math.round((t.total - avgPrior) / avgPrior * 100) : null
+
+  // --- burn rate & projection (only meaningful for the current, in-progress month) ---
+  const now = new Date()
+  const isCurrentMonth = data.month_key === todayKey()
+  const [yy, mm] = data.month_key.split('-').map(Number)
+  const daysInMonth = new Date(yy, mm, 0).getDate()
+  const dayOfMonth = isCurrentMonth ? now.getDate() : daysInMonth
+  const perDay = dayOfMonth > 0 ? t.total / dayOfMonth : 0
+  const projected = Math.round(perDay * daysInMonth)
+
+  // --- cumulative savings across all tracked months (net worth-ish) ---
+  const cumulativeSavings = allMonths.reduce((s, m) => s + ((m.salary || 0) - (m.expenses || []).reduce((a, e) => a + e.amount, 0)), 0)
+
+  // --- quick add ---
+  const [qName, setQName] = useState(''); const [qAmount, setQAmount] = useState(''); const [qCat, setQCat] = useState(CATS[0] ? CATS[0].id : 'rent')
+  const quickAdd = () => {
+    const amt = Number(qAmount); if (!qName.trim() || !amt) { showToast('Add a description and amount.', 'warn'); return }
+    persist({ ...data, expenses: [{ id: Date.now(), name: qName.trim(), amount: amt, category: qCat, date: new Date().toISOString().slice(0, 10), unnecessary: false }, ...(data.expenses || [])] })
+    setQName(''); setQAmount(''); showToast('Expense added.')
+  }
+
   return (
     <div className="grid" style={{ gap: 20 }}>
       <div className="card" style={{ display: 'flex', alignItems: 'flex-end', gap: 16, flexWrap: 'wrap' }}>
         <div className="inline-field" style={{ flex: '1 1 220px' }}>
           <label>Monthly salary / income for {fmtMonth(data.month_key)}</label>
-          <input type="number" value={salaryInput} onChange={e => setSalaryInput(e.target.value)} placeholder="e.g. 85000" />
+          <input type="number" inputMode="decimal" value={salaryInput} onChange={e => setSalaryInput(e.target.value)} placeholder="e.g. 85000" />
         </div>
         <button className="btn btn-primary" style={{ width: 'auto', padding: '0 22px' }} onClick={() => persist({ ...data, salary: Number(salaryInput) || 0 })}>Save income</button>
       </div>
+
+      {/* insight line */}
+      {(vsAvgPct !== null || (isCurrentMonth && t.total > 0)) && <div className="card" style={{ padding: '16px 20px', display: 'flex', flexWrap: 'wrap', gap: '6px 20px', alignItems: 'center' }}>
+        {vsAvgPct !== null && <span style={{ fontSize: 14 }}>
+          {vsAvgPct === 0 ? <>You're spending about the <strong>same</strong> as your {priorMonths.length}-month average.</>
+            : <>You're spending <strong style={{ color: vsAvgPct > 0 ? 'var(--red)' : 'var(--green)' }}>{Math.abs(vsAvgPct)}% {vsAvgPct > 0 ? 'more' : 'less'}</strong> than your {priorMonths.length}-month average of {INR(avgPrior)}.</>}
+        </span>}
+        {isCurrentMonth && t.total > 0 && <span style={{ fontSize: 14, color: 'var(--ink-soft)' }}>
+          {INR(perDay)}/day so far · on track for <strong>{INR(projected)}</strong> by month-end.
+        </span>}
+      </div>}
+
       <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(190px,1fr))' }}>
         <Stat label="Income" val={INR(t.salary)} />
         <Stat label="Spent" val={INR(t.total)} accent="var(--red)" />
         <Stat label="Savings" val={INR(t.savings)} accent={t.savings >= 0 ? 'var(--green)' : 'var(--red)'} />
-        <Stat label="Savings rate" val={savingsRate + '%'} accent={savingsRate >= 0 ? 'var(--green)' : 'var(--red)'} />
+        <Stat label="Total saved (all time)" val={INR(cumulativeSavings)} accent={cumulativeSavings >= 0 ? 'var(--green)' : 'var(--red)'} />
       </div>
+
+      {/* quick add */}
+      <div className="card">
+        <h2>Quick add</h2>
+        <p className="sub">Log a spend without leaving the dashboard.</p>
+        <div className="add-row">
+          <div className="inline-field"><label>Description</label>
+            <input value={qName} onChange={e => setQName(e.target.value)} placeholder="e.g. Tea" onKeyDown={e => e.key === 'Enter' && quickAdd()} /></div>
+          <div className="inline-field"><label>Amount ({currencySymbol(CURRENCY)})</label>
+            <input type="number" inputMode="decimal" value={qAmount} onChange={e => setQAmount(e.target.value)} placeholder="0" onKeyDown={e => e.key === 'Enter' && quickAdd()} /></div>
+          <div className="inline-field"><label>Category</label>
+            <select value={qCat} onChange={e => setQCat(e.target.value)}>{CATS.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div>
+          <button className="btn btn-primary" style={{ width: 'auto', padding: '0 20px' }} onClick={quickAdd}>Add</button>
+        </div>
+        {/* quick category chips for fast mobile entry */}
+        <div className="chip-row" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
+          {CATS.slice(0, 8).map(c => <button key={c.id} onClick={() => setQCat(c.id)}
+            className="chip" style={{ borderColor: qCat === c.id ? c.color : 'var(--line-2)', background: qCat === c.id ? c.color + '22' : 'transparent', color: qCat === c.id ? c.color : 'var(--ink-soft)' }}>
+            <span className="cat-dot" style={{ background: c.color }}></span>{c.name}</button>)}
+        </div>
+      </div>
+
       <div className="row">
         <div className="card" style={{ flex: '1 1 380px' }}>
           <h2>Where the money went</h2>
-          <p className="sub">Category breakdown for {fmtMonth(data.month_key)}</p>
-          {topCats.length === 0 ? <div className="empty">No expenses yet. Add some in the Expenses tab.</div> : <DonutChart byCat={t.byCat} total={t.total} />}
+          <p className="sub">Category breakdown for {fmtMonth(data.month_key)} · tap a slice to see those expenses</p>
+          {topCats.length === 0 ? <div className="empty">No expenses yet. Add some above or in the Expenses tab.</div> : <DonutChart byCat={t.byCat} total={t.total} onSlice={drillToCategory} />}
         </div>
         <div className="card" style={{ flex: '1 1 300px' }}>
           <h2>Budget progress</h2>
@@ -232,10 +301,10 @@ function Dashboard() {
       <div className="row">
         <div className="card" style={{ flex: '1 1 300px' }}>
           <h2>Top categories</h2>
-          <p className="sub">Your biggest spends this month</p>
+          <p className="sub">Your biggest spends this month · tap to drill in</p>
           {topCats.length === 0 ? <div className="empty">Nothing logged yet.</div> : topCats.map(([cid, amt]) => {
             const c = catById(CATS, cid); const pct = t.total > 0 ? Math.round(amt / t.total * 100) : 0
-            return <div key={cid} style={{ marginBottom: 14 }}>
+            return <div key={cid} onClick={() => drillToCategory(cid)} style={{ marginBottom: 14, cursor: 'pointer' }} title={'See ' + c.name + ' expenses'}>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13.5, marginBottom: 5 }}>
                 <span><span className="cat-dot" style={{ background: c.color }}></span>{c.name}</span>
                 <span className="num" style={{ fontWeight: 500 }}>{INR(amt)} · {pct}%</span>
@@ -276,7 +345,7 @@ function downloadCSV(filename, rows) {
 }
 
 function Expenses() {
-  const { user, data, persist, showToast } = useContext(Ctx)
+  const { user, data, persist, showToast, drillCat, setDrillCat } = useContext(Ctx)
   const t = useTotals(data)
   const [name, setName] = useState(''); const [amount, setAmount] = useState(''); const [category, setCategory] = useState('rent')
   const [unnecessary, setUnnecessary] = useState(false)
@@ -286,6 +355,12 @@ function Expenses() {
   // filters
   const [q, setQ] = useState(''); const [fCat, setFCat] = useState('all'); const [fUnnec, setFUnnec] = useState(false)
   const [minAmt, setMinAmt] = useState(''); const [maxAmt, setMaxAmt] = useState('')
+  // bulk selection
+  const [selected, setSelected] = useState([])
+  const [bulkCat, setBulkCat] = useState('')
+
+  // When arriving via dashboard drill-down, pre-set the category filter once.
+  useEffect(() => { if (drillCat) { setFCat(drillCat); setDrillCat(null) } }, [drillCat])
 
   const budgetFor = cid => (data.budgets && data.budgets[cid]) || 0
   const unnecLimit = (data.budgets && data.budgets.unnecessary) || 0
@@ -304,6 +379,7 @@ function Expenses() {
   }
   const remove = id => persist({ ...data, expenses: data.expenses.filter(e => e.id !== id) })
   const toggleUnnec = id => persist({ ...data, expenses: data.expenses.map(e => e.id === id ? { ...e, unnecessary: !e.unnecessary } : e) })
+  const duplicate = e => { persist({ ...data, expenses: [{ ...e, id: Date.now(), date: new Date().toISOString().slice(0, 10), recurring: false }, ...data.expenses] }); showToast('Added again.') }
   const startEdit = e => { setEditId(e.id); setEdit({ name: e.name, amount: String(e.amount), category: e.category, date: e.date }) }
   const cancelEdit = () => { setEditId(null); setEdit({}) }
   const saveEdit = id => {
@@ -311,6 +387,11 @@ function Expenses() {
     persist({ ...data, expenses: data.expenses.map(e => e.id === id ? { ...e, name: edit.name.trim(), amount: amt, category: edit.category, date: edit.date } : e) })
     setEditId(null); setEdit({}); showToast('Expense updated.')
   }
+  // bulk
+  const toggleSelect = id => setSelected(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id])
+  const clearSelection = () => { setSelected([]); setBulkCat('') }
+  const bulkDelete = () => { persist({ ...data, expenses: data.expenses.filter(e => !selected.includes(e.id)) }); showToast(`Deleted ${selected.length} expense${selected.length > 1 ? 's' : ''}.`); clearSelection() }
+  const bulkRecategorize = cid => { if (!cid) return; persist({ ...data, expenses: data.expenses.map(e => selected.includes(e.id) ? { ...e, category: cid } : e) }); showToast(`Moved ${selected.length} to ${catById(CATS, cid).name}.`); clearSelection() }
 
   const filtered = (data.expenses || []).filter(e => {
     if (q && !e.name.toLowerCase().includes(q.toLowerCase())) return false
@@ -347,7 +428,7 @@ function Expenses() {
           <div className="inline-field"><label>Description</label>
             <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Monthly rent" onKeyDown={e => e.key === 'Enter' && add()} /></div>
           <div className="inline-field"><label>Amount ({currencySymbol(CURRENCY)})</label>
-            <input type="number" value={amount} onChange={e => setAmount(e.target.value)} placeholder="0" onKeyDown={e => e.key === 'Enter' && add()} /></div>
+            <input type="number" inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value)} placeholder="0" onKeyDown={e => e.key === 'Enter' && add()} /></div>
           <div className="inline-field"><label>Category</label>
             <select value={category} onChange={e => setCategory(e.target.value)}>{CATS.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div>
           <button className="btn btn-primary" style={{ width: 'auto', padding: '0 20px' }} onClick={add}>Add</button>
@@ -376,33 +457,46 @@ function Expenses() {
           <div className="inline-field" style={{ flex: '1 1 140px' }}><label>Category</label>
             <select value={fCat} onChange={e => setFCat(e.target.value)}><option value="all">All categories</option>{CATS.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div>
           <div className="inline-field" style={{ width: 110 }}><label>Min ₹</label>
-            <input type="number" value={minAmt} onChange={e => setMinAmt(e.target.value)} placeholder="0" /></div>
+            <input type="number" inputMode="decimal" value={minAmt} onChange={e => setMinAmt(e.target.value)} placeholder="0" /></div>
           <div className="inline-field" style={{ width: 110 }}><label>Max ₹</label>
-            <input type="number" value={maxAmt} onChange={e => setMaxAmt(e.target.value)} placeholder="∞" /></div>
+            <input type="number" inputMode="decimal" value={maxAmt} onChange={e => setMaxAmt(e.target.value)} placeholder="∞" /></div>
           <label className="check" style={{ height: 40, alignItems: 'center' }}>
             <input type="checkbox" checked={fUnnec} onChange={e => setFUnnec(e.target.checked)} /> Unnecessary only</label>
           {anyFilter && <button className="btn btn-ghost" style={{ height: 40, padding: '0 14px' }} onClick={clearFilters}>Clear</button>}
         </div>
         {anyFilter && <p className="sub" style={{ margin: '4px 0 0' }}>Showing {filtered.length} of {(data.expenses || []).length} · {INR(filteredTotal)}</p>}
 
+        {/* bulk action bar */}
+        {selected.length > 0 && <div className="bulk-bar" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginTop: 12, padding: '10px 14px', background: 'var(--gold-bg)', borderRadius: 10 }}>
+          <strong style={{ fontSize: 13.5 }}>{selected.length} selected</strong>
+          <select value={bulkCat} onChange={e => { setBulkCat(e.target.value); bulkRecategorize(e.target.value) }}
+            style={{ height: 34, padding: '0 10px', border: '1px solid var(--line-2)', borderRadius: 8, background: 'var(--card)', color: 'var(--ink)' }}>
+            <option value="">Move to category…</option>{CATS.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+          <button className="btn btn-ghost" style={{ height: 34, padding: '0 14px', color: 'var(--red)' }} onClick={bulkDelete}>Delete selected</button>
+          <button className="btn btn-ghost" style={{ height: 34, padding: '0 14px' }} onClick={clearSelection}>Clear</button>
+        </div>}
+
         {(!data.expenses || data.expenses.length === 0) ? <div className="empty">No expenses logged for {fmtMonth(data.month_key)} yet.</div> :
           filtered.length === 0 ? <div className="empty">No expenses match your filters.</div> :
           <table className="exp-table" style={{ marginTop: 14 }}>
-            <thead><tr><th>Description</th><th>Category</th><th>Date</th><th style={{ textAlign: 'right' }}>Amount</th><th style={{ textAlign: 'center' }}>Unnec.</th><th style={{ textAlign: 'right', width: 90 }}></th></tr></thead>
+            <thead><tr><th style={{ width: 34 }}></th><th>Description</th><th>Category</th><th>Date</th><th style={{ textAlign: 'right' }}>Amount</th><th style={{ textAlign: 'center' }}>Unnec.</th><th style={{ textAlign: 'right', width: 120 }}></th></tr></thead>
             <tbody>{filtered.map(e => { const c = catById(CATS, e.category)
               if (editId === e.id) return (
                 <tr key={e.id} className="edit-row">
+                  <td></td>
                   <td><input value={edit.name} onChange={ev => setEdit(p => ({ ...p, name: ev.target.value }))} style={editStyle} /></td>
                   <td><select value={edit.category} onChange={ev => setEdit(p => ({ ...p, category: ev.target.value }))} style={editStyle}>{CATS.map(cc => <option key={cc.id} value={cc.id}>{cc.name}</option>)}</select></td>
                   <td><input type="date" value={edit.date} onChange={ev => setEdit(p => ({ ...p, date: ev.target.value }))} style={editStyle} /></td>
-                  <td><input type="number" value={edit.amount} onChange={ev => setEdit(p => ({ ...p, amount: ev.target.value }))} style={{ ...editStyle, textAlign: 'right' }} /></td>
+                  <td><input type="number" inputMode="decimal" value={edit.amount} onChange={ev => setEdit(p => ({ ...p, amount: ev.target.value }))} style={{ ...editStyle, textAlign: 'right' }} /></td>
                   <td></td>
                   <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
                     <button className="icon-btn" onClick={() => saveEdit(e.id)} title="Save" style={{ color: 'var(--green)' }}>✓</button>
                     <button className="icon-btn" onClick={cancelEdit} title="Cancel">✕</button></td>
                 </tr>)
               return (
-              <tr key={e.id}>
+              <tr key={e.id} className={selected.includes(e.id) ? 'sel-row' : ''}>
+                <td data-label="" style={{ width: 34 }}><input type="checkbox" checked={selected.includes(e.id)} onChange={() => toggleSelect(e.id)} style={{ width: 17, height: 17, accentColor: 'var(--gold)', cursor: 'pointer' }} title="Select" /></td>
                 <td data-label="Description" style={{ fontWeight: 500 }}>{e.name}{e.recurring && <span className="pill" style={{ marginLeft: 8, background: 'var(--gold-bg)', color: 'var(--gold)' }}>↻</span>}{e.unnecessary && <span className="unnec-badge" style={{ marginLeft: 8 }}>⚠</span>}</td>
                 <td data-label="Category"><span className="tag" style={{ background: c.color + '22', color: c.color }}>{c.name}</span></td>
                 <td data-label="Date" style={{ color: 'var(--muted)' }}>{new Date(e.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}</td>
@@ -411,6 +505,7 @@ function Expenses() {
                   <input type="checkbox" checked={!!e.unnecessary} onChange={() => toggleUnnec(e.id)}
                     title="Mark this expense as unnecessary" style={{ width: 17, height: 17, accentColor: 'var(--red)', cursor: 'pointer' }} /></td>
                 <td data-label="" style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                  <button className="icon-btn" onClick={() => duplicate(e)} title="Add again">⧉</button>
                   <button className="icon-btn" onClick={() => startEdit(e)} title="Edit">✎</button>
                   <button className="icon-btn" onClick={() => remove(e.id)} title="Delete">✕</button></td>
               </tr>) })}
@@ -661,6 +756,40 @@ function Settings() {
   const commitGoals = () => { saveSettings({ goals }); showToast('Goals updated.') }
   const removeGoal = id => { const next = goals.filter(g => g.id !== id); setGoals(next); saveSettings({ goals: next }); showToast('Goal removed.') }
 
+  // backup / restore: export full dataset to JSON, re-import from a file
+  const { user } = useContext(Ctx)
+  const exportBackup = async () => {
+    const months = await api.listMonths(user.id)
+    const payload = { version: 1, exportedAt: new Date().toISOString(), settings, months }
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob); const a = document.createElement('a')
+    a.href = url; a.download = `ledger-backup-${new Date().toISOString().slice(0, 10)}.json`; a.click(); URL.revokeObjectURL(url)
+    showToast('Backup downloaded.')
+  }
+  const fileRef = useRef()
+  const importBackup = e => {
+    const file = e.target.files && e.target.files[0]; if (!file) return
+    const reader = new FileReader()
+    reader.onload = async () => {
+      try {
+        const data = JSON.parse(reader.result)
+        if (!data || !Array.isArray(data.months)) throw new Error('Not a valid Ledger backup file.')
+        if (!window.confirm(`Restore ${data.months.length} month(s)? This overwrites months with the same dates and replaces your settings.`)) { e.target.value = ''; return }
+        if (data.settings) await saveSettings(data.settings)
+        for (const m of data.months) {
+          const { user_id, ...payload } = m
+          await api.upsertMonth(user.id, m.month_key, payload)
+        }
+        showToast('Backup restored. Reloading…')
+        setTimeout(() => location.reload(), 1200)
+      } catch (err) {
+        showToast(err.message || 'Could not read that file.', 'warn')
+      }
+      e.target.value = ''
+    }
+    reader.readAsText(file)
+  }
+
   const fieldStyle = { height: 36, padding: '0 10px', border: '1px solid var(--line-2)', borderRadius: 8, background: 'var(--paper-2)', color: 'var(--ink)' }
   return (
     <div className="grid" style={{ gap: 20 }}>
@@ -785,6 +914,17 @@ function Settings() {
         </div>
         <p style={{ fontSize: 12, color: 'var(--muted)', marginTop: 14 }}>Month-start day is stored for your records; weekly report grouping still uses calendar weeks in this version.</p>
       </div>
+
+      <div className="card">
+        <h2>Data &amp; backup</h2>
+        <p className="sub">Export your entire Ledger (all months + settings) to a JSON file, or restore from one. This is separate from the CSV export, which is for spreadsheets.</p>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          <button className="btn btn-primary" style={{ width: 'auto', padding: '0 20px' }} onClick={exportBackup}>⤓ Download backup (JSON)</button>
+          <button className="btn btn-ghost" style={{ height: 44, padding: '0 18px' }} onClick={() => fileRef.current && fileRef.current.click()}>⤒ Restore from backup</button>
+          <input ref={fileRef} type="file" accept="application/json,.json" onChange={importBackup} style={{ display: 'none' }} />
+        </div>
+        <p style={{ fontSize: 12, color: 'var(--muted)', marginTop: 12 }}>Restoring overwrites months with matching dates and replaces your settings. Your login isn't affected.</p>
+      </div>
     </div>
   )
 }
@@ -796,11 +936,11 @@ function useChart(cfg, deps) {
   useEffect(() => { if (!ref.current) return; inst.current = new Chart(ref.current, cfg()); return () => inst.current && inst.current.destroy() }, [...deps, theme])
   return ref
 }
-function DonutChart({ byCat, total }) {
+function DonutChart({ byCat, total, onSlice }) {
   const e = Object.entries(byCat)
   const ref = useChart(() => ({ type: 'doughnut',
     data: { labels: e.map(([id]) => catById(CATS, id).name), datasets: [{ data: e.map(([, v]) => v), backgroundColor: e.map(([id]) => catById(CATS, id).color), borderWidth: 3, borderColor: cardColor() }] },
-    options: { responsive: true, maintainAspectRatio: false, cutout: '64%', plugins: { legend: { position: 'right', labels: { font: { family: 'Spline Sans', size: 12 }, padding: 12, boxWidth: 12, color: tickColor() } }, tooltip: { callbacks: { label: c => ` ${c.label}: ₹${Math.round(c.raw).toLocaleString('en-IN')} (${Math.round(c.raw / total * 100)}%)` } } } } }), [JSON.stringify(byCat)])
+    options: { responsive: true, maintainAspectRatio: false, cutout: '64%', onClick: (evt, els) => { if (onSlice && els && els.length) onSlice(e[els[0].index][0]) }, onHover: (evt, els) => { if (onSlice) evt.native.target.style.cursor = els.length ? 'pointer' : 'default' }, plugins: { legend: { position: 'right', labels: { font: { family: 'Spline Sans', size: 12 }, padding: 12, boxWidth: 12, color: tickColor() } }, tooltip: { callbacks: { label: c => ` ${c.label}: ₹${Math.round(c.raw).toLocaleString('en-IN')} (${Math.round(c.raw / total * 100)}%)` } } } } }), [JSON.stringify(byCat)])
   return <div style={{ position: 'relative', height: 260 }}><canvas ref={ref} role="img" aria-label="Donut chart of spending by category"></canvas></div>
 }
 function BarByCategory({ byCat }) {
