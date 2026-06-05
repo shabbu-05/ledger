@@ -808,7 +808,8 @@ function BarByCategory({ byCat }) {
   const ref = useChart(() => ({ type: 'bar',
     data: { labels: e.map(([id]) => catById(CATS, id).name), datasets: [{ data: e.map(([, v]) => v), backgroundColor: e.map(([id]) => catById(CATS, id).color), borderRadius: 6 }] },
     options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => ' ₹' + Math.round(c.raw).toLocaleString('en-IN') } } }, scales: { x: { ticks: axTicks(), grid: { color: gridColor() } }, y: { grid: { display: false }, ticks: catTicks() } } } }), [JSON.stringify(byCat)])
-  return <div style={{ position: 'relative', height: Math.max(220, e.length * 44 + 40) }}><canvas ref={ref} role="img" aria-label="Bar chart of spending by category"></canvas></div>
+  const rowH = (typeof window !== 'undefined' && window.innerWidth <= 760) ? 34 : 44
+  return <div style={{ position: 'relative', height: Math.max(200, e.length * rowH + 36) }}><canvas ref={ref} role="img" aria-label="Bar chart of spending by category"></canvas></div>
 }
 function BarByWeek({ weeks }) {
   const ref = useChart(() => ({ type: 'bar',
