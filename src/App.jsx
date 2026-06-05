@@ -123,7 +123,7 @@ function Shell({ user, onLogout }) {
   useEffect(() => { document.documentElement.setAttribute('data-theme', theme); localStorage.setItem('ledger_theme', theme) }, [theme])
   useEffect(() => { if (!settings) return; let live = true; (async () => { const m = await api.getMonth(user.id, mk); if (live) setData(m || blankMonth(mk, SETTINGS)) })(); return () => { live = false } }, [mk, bump, settings])
   const persist = async next => { const saved = await api.upsertMonth(user.id, mk, next); setData(saved) }
-  const showToast = msg => { setToast(msg); setTimeout(() => setToast(null), 3200) }
+  const showToast = (msg, type = 'success') => { setToast({ msg, type }); setTimeout(() => setToast(null), 3200) }
 
   if (!settings) return <div className="empty" style={{ paddingTop: 80 }}>Loading…</div>
 
@@ -131,16 +131,16 @@ function Shell({ user, onLogout }) {
   return (
     <Ctx.Provider value={{ user, mk, data, persist, showToast, theme, setTheme, settings, saveSettings, cats: settings.categories, refresh: () => setBump(b => b + 1) }}>
       <div className="app">
-        {toast && <div className="toast"><span style={{ fontSize: 18 }}>⚠</span>{toast}</div>}
+        {toast && <div className={'toast toast-' + toast.type}><span style={{ fontSize: 17 }}>{toast.type === 'warn' ? '⚠' : '✓'}</span>{toast.msg}</div>}
         <div className="topbar">
           <div className="brand"><Logo size={30} /><span className="serif" style={{ fontSize: 20 }}>Ledger</span></div>
           <div className="tabs">{tabs.map(([id, label]) => <button key={id} className={'tab' + (tab === id ? ' active' : '')} onClick={() => setTab(id)}>{label}</button>)}</div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+          <div className="topbar-actions" style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
             <button className="theme-toggle" onClick={() => setTheme(t => t === 'light' ? 'dark' : 'light')}
               title={theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'} aria-label="Toggle dark mode">
               <span className="knob">{theme === 'light' ? '☀' : '☾'}</span>
             </button>
-            <span style={{ fontSize: 13, color: 'var(--muted)' }}>{user.email}</span>
+            <span className="user-email" style={{ fontSize: 13, color: 'var(--muted)' }}>{user.email}</span>
             <button className="btn btn-ghost" style={{ height: 36, padding: '0 14px', fontSize: 13 }} onClick={onLogout}>Sign out</button>
           </div>
         </div>
@@ -246,12 +246,12 @@ function Expenses() {
   const add = () => {
     const amt = Number(amount); if (!name.trim() || !amt) return
     const b = budgetFor(category); const already = t.byCat[category] || 0; const c = catById(CATS, category)
-    if (b > 0 && already >= b) showToast(`Budget exceeded for ${c.name} — already ${INR(already)} of ${INR(b)} budget!`)
-    else if (b > 0 && already + amt > b) showToast(`This spend pushes ${c.name} over budget (${INR(already + amt)} / ${INR(b)})!`)
+    if (b > 0 && already >= b) showToast(`Budget exceeded for ${c.name} — already ${INR(already)} of ${INR(b)} budget!`, 'warn')
+    else if (b > 0 && already + amt > b) showToast(`This spend pushes ${c.name} over budget (${INR(already + amt)} / ${INR(b)})!`, 'warn')
     if (unnecessary && unnecLimit > 0) {
       const after = t.unnecessary + amt
-      if (t.unnecessary >= unnecLimit) showToast(`Heads up — you've already spent ${INR(t.unnecessary)} on unnecessary things, past your ${INR(unnecLimit)} limit. Added anyway.`)
-      else if (after > unnecLimit) showToast(`This pushes your unnecessary spending to ${INR(after)}, over your ${INR(unnecLimit)} limit. Added anyway.`)
+      if (t.unnecessary >= unnecLimit) showToast(`Heads up — you've already spent ${INR(t.unnecessary)} on unnecessary things, past your ${INR(unnecLimit)} limit. Added anyway.`, 'warn')
+      else if (after > unnecLimit) showToast(`This pushes your unnecessary spending to ${INR(after)}, over your ${INR(unnecLimit)} limit. Added anyway.`, 'warn')
     }
     persist({ ...data, expenses: [{ id: Date.now(), name: name.trim(), amount: amt, category, date, unnecessary }, ...(data.expenses || [])] })
     setName(''); setAmount(''); setUnnecessary(false)
@@ -479,10 +479,10 @@ function Settings() {
   const [defBud, setDefBud] = useState(() => { const o = {}; Object.keys(settings.defaultBudgets || {}).forEach(k => o[k] = String(settings.defaultBudgets[k])); return o })
 
   const slug = s => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || ('cat' + Date.now())
-  const addCat = () => { if (!newName.trim()) return; const id = slug(newName); if (cats.some(c => c.id === id)) { showToast('A category with a similar name already exists.'); return } setCats([...cats, { id, name: newName.trim(), color: newColor }]); setNewName('') }
+  const addCat = () => { if (!newName.trim()) return; const id = slug(newName); if (cats.some(c => c.id === id)) { showToast('A category with a similar name already exists.', 'warn'); return } setCats([...cats, { id, name: newName.trim(), color: newColor }]); setNewName('') }
   const renameCat = (id, name) => setCats(cats.map(c => c.id === id ? { ...c, name } : c))
   const recolorCat = (id, color) => setCats(cats.map(c => c.id === id ? { ...c, color } : c))
-  const removeCat = id => { if (cats.length <= 1) { showToast('Keep at least one category.'); return } setCats(cats.filter(c => c.id !== id)) }
+  const removeCat = id => { if (cats.length <= 1) { showToast('Keep at least one category.', 'warn'); return } setCats(cats.filter(c => c.id !== id)) }
   const setBud = (k, v) => setDefBud(p => ({ ...p, [k]: v }))
 
   const saveCats = () => { saveSettings({ categories: cats }); showToast('Categories saved.') }
