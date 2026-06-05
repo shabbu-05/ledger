@@ -121,7 +121,7 @@ export const DEFAULT_CATEGORIES = [
   { id: 'family', name: 'Parents / Family', color: '#7bb39a' },
   { id: 'misc', name: 'Miscellaneous', color: '#9aa3ab' },
 ];
-export const DEFAULT_SETTINGS = { categories: DEFAULT_CATEGORIES, defaultBudgets: {}, currency: 'INR', monthStart: 1, themeDefault: 'light' };
+export const DEFAULT_SETTINGS = { categories: DEFAULT_CATEGORIES, defaultBudgets: {}, currency: 'INR', monthStart: 1, themeDefault: 'light', recurring: [], goals: [] };
 
 // ----------------------------------------------------------------------------
 // DEMO BACKEND (localStorage) - mirrors the cloud API exactly
