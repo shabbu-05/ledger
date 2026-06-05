@@ -121,7 +121,18 @@ function Shell({ user, onLogout }) {
   }
 
   useEffect(() => { document.documentElement.setAttribute('data-theme', theme); localStorage.setItem('ledger_theme', theme) }, [theme])
-  useEffect(() => { if (!settings) return; let live = true; (async () => { const m = await api.getMonth(user.id, mk); if (live) setData(m || blankMonth(mk, SETTINGS)) })(); return () => { live = false } }, [mk, bump, settings])
+  useEffect(() => { if (!settings) return; let live = true; (async () => {
+    let m = await api.getMonth(user.id, mk)
+    if (!m) m = blankMonth(mk, SETTINGS)
+    // Auto-seed recurring expenses the first time this month is opened.
+    const recurring = SETTINGS.recurring || []
+    if (recurring.length && !m.seededRecurring) {
+      const seeded = recurring.map(r => ({ id: Date.now() + Math.random(), name: r.name, amount: Number(r.amount) || 0, category: r.category, date: mk + '-01', unnecessary: !!r.unnecessary, recurring: true }))
+      m = { ...m, expenses: [...seeded, ...(m.expenses || [])], seededRecurring: true }
+      m = await api.upsertMonth(user.id, mk, m)
+    }
+    if (live) setData(m)
+  })(); return () => { live = false } }, [mk, bump, settings])
   const persist = async next => { const saved = await api.upsertMonth(user.id, mk, next); setData(saved) }
   const showToast = (msg, type = 'success') => { setToast({ msg, type }); setTimeout(() => setToast(null), 3200) }
 
@@ -213,6 +224,13 @@ function Dashboard() {
           {topCats.length === 0 ? <div className="empty">No expenses yet. Add some in the Expenses tab.</div> : <DonutChart byCat={t.byCat} total={t.total} />}
         </div>
         <div className="card" style={{ flex: '1 1 300px' }}>
+          <h2>Budget progress</h2>
+          <p className="sub">Spent vs budget, per category</p>
+          <BudgetProgress data={data} t={t} />
+        </div>
+      </div>
+      <div className="row">
+        <div className="card" style={{ flex: '1 1 300px' }}>
           <h2>Top categories</h2>
           <p className="sub">Your biggest spends this month</p>
           {topCats.length === 0 ? <div className="empty">Nothing logged yet.</div> : topCats.map(([cid, amt]) => {
@@ -230,17 +248,45 @@ function Dashboard() {
     </div>
   )
 }
+function BudgetProgress({ data, t }) {
+  const items = CATS.map(c => ({ c, lim: (data.budgets && data.budgets[c.id]) || 0, spent: t.byCat[c.id] || 0 })).filter(x => x.lim > 0)
+  if (items.length === 0) return <div className="empty">No category budgets set. Add some in the Budgets tab to track progress here.</div>
+  return <div>{items.map(({ c, lim, spent }) => {
+    const pct = Math.min(100, spent / lim * 100); const over = spent > lim
+    return <div key={c.id} style={{ marginBottom: 14 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13.5, marginBottom: 5 }}>
+        <span><span className="cat-dot" style={{ background: c.color }}></span>{c.name}</span>
+        <span className="num" style={{ fontWeight: 500, color: over ? 'var(--red)' : 'var(--ink)' }}>{INR(spent)} / {INR(lim)}</span>
+      </div>
+      <div className="bar-track"><div className="bar-fill" style={{ width: pct + '%', background: over ? 'var(--red)' : c.color }}></div></div>
+    </div>
+  })}</div>
+}
 function Stat({ label, val, accent }) {
   return <div className="stat"><div className="label">{label}</div><div className="val num" style={{ color: accent || 'var(--ink)' }}>{val}</div></div>
 }
 
 // ---------------- expenses ----------------
+function downloadCSV(filename, rows) {
+  const esc = v => { const s = String(v ?? ''); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s }
+  const csv = rows.map(r => r.map(esc).join(',')).join('\n')
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob); const a = document.createElement('a')
+  a.href = url; a.download = filename; a.click(); URL.revokeObjectURL(url)
+}
+
 function Expenses() {
-  const { data, persist, showToast } = useContext(Ctx)
+  const { user, data, persist, showToast } = useContext(Ctx)
   const t = useTotals(data)
   const [name, setName] = useState(''); const [amount, setAmount] = useState(''); const [category, setCategory] = useState('rent')
   const [unnecessary, setUnnecessary] = useState(false)
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [editId, setEditId] = useState(null)
+  const [edit, setEdit] = useState({})
+  // filters
+  const [q, setQ] = useState(''); const [fCat, setFCat] = useState('all'); const [fUnnec, setFUnnec] = useState(false)
+  const [minAmt, setMinAmt] = useState(''); const [maxAmt, setMaxAmt] = useState('')
+
   const budgetFor = cid => (data.budgets && data.budgets[cid]) || 0
   const unnecLimit = (data.budgets && data.budgets.unnecessary) || 0
   const add = () => {
@@ -258,6 +304,40 @@ function Expenses() {
   }
   const remove = id => persist({ ...data, expenses: data.expenses.filter(e => e.id !== id) })
   const toggleUnnec = id => persist({ ...data, expenses: data.expenses.map(e => e.id === id ? { ...e, unnecessary: !e.unnecessary } : e) })
+  const startEdit = e => { setEditId(e.id); setEdit({ name: e.name, amount: String(e.amount), category: e.category, date: e.date }) }
+  const cancelEdit = () => { setEditId(null); setEdit({}) }
+  const saveEdit = id => {
+    const amt = Number(edit.amount); if (!edit.name.trim() || !amt) { showToast('Description and amount are required.', 'warn'); return }
+    persist({ ...data, expenses: data.expenses.map(e => e.id === id ? { ...e, name: edit.name.trim(), amount: amt, category: edit.category, date: edit.date } : e) })
+    setEditId(null); setEdit({}); showToast('Expense updated.')
+  }
+
+  const filtered = (data.expenses || []).filter(e => {
+    if (q && !e.name.toLowerCase().includes(q.toLowerCase())) return false
+    if (fCat !== 'all' && e.category !== fCat) return false
+    if (fUnnec && !e.unnecessary) return false
+    if (minAmt && e.amount < Number(minAmt)) return false
+    if (maxAmt && e.amount > Number(maxAmt)) return false
+    return true
+  })
+  const filteredTotal = filtered.reduce((s, e) => s + e.amount, 0)
+  const anyFilter = q || fCat !== 'all' || fUnnec || minAmt || maxAmt
+  const clearFilters = () => { setQ(''); setFCat('all'); setFUnnec(false); setMinAmt(''); setMaxAmt('') }
+
+  const exportMonth = () => {
+    const rows = [['Description', 'Category', 'Date', 'Amount', 'Unnecessary']]
+    ;(data.expenses || []).forEach(e => rows.push([e.name, catById(CATS, e.category).name, e.date, e.amount, e.unnecessary ? 'Yes' : 'No']))
+    downloadCSV(`ledger-${data.month_key}.csv`, rows)
+  }
+  const exportAll = async () => {
+    const months = await api.listMonths(user.id)
+    const rows = [['Month', 'Description', 'Category', 'Date', 'Amount', 'Unnecessary']]
+    months.forEach(m => (m.expenses || []).forEach(e => rows.push([m.month_key, e.name, catById(m.categories || CATS, e.category).name, e.date, e.amount, e.unnecessary ? 'Yes' : 'No'])))
+    downloadCSV('ledger-all-months.csv', rows)
+    showToast('Exported all months to CSV.')
+  }
+
+  const editStyle = { height: 34, padding: '0 8px', border: '1px solid var(--line-2)', borderRadius: 7, background: 'var(--paper-2)', color: 'var(--ink)', width: '100%' }
   return (
     <div className="grid" style={{ gap: 20 }}>
       <div className="card">
@@ -282,23 +362,57 @@ function Expenses() {
         </div>
       </div>
       <div className="card">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', flexWrap: 'wrap', gap: 10 }}>
           <h2>This month's expenses</h2>
-          <span style={{ fontSize: 14, color: 'var(--muted)' }}>Total <strong className="num" style={{ color: 'var(--ink)' }}>{INR(t.total)}</strong></span>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <button className="btn btn-ghost" style={{ height: 34, padding: '0 14px', fontSize: 12.5 }} onClick={exportMonth}>⤓ Export month</button>
+            <button className="btn btn-ghost" style={{ height: 34, padding: '0 14px', fontSize: 12.5 }} onClick={exportAll}>⤓ Export all</button>
+          </div>
         </div>
+        {/* filter bar */}
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end', marginTop: 14, marginBottom: 4 }}>
+          <div className="inline-field" style={{ flex: '2 1 200px' }}><label>Search</label>
+            <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search description…" /></div>
+          <div className="inline-field" style={{ flex: '1 1 140px' }}><label>Category</label>
+            <select value={fCat} onChange={e => setFCat(e.target.value)}><option value="all">All categories</option>{CATS.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div>
+          <div className="inline-field" style={{ width: 110 }}><label>Min ₹</label>
+            <input type="number" value={minAmt} onChange={e => setMinAmt(e.target.value)} placeholder="0" /></div>
+          <div className="inline-field" style={{ width: 110 }}><label>Max ₹</label>
+            <input type="number" value={maxAmt} onChange={e => setMaxAmt(e.target.value)} placeholder="∞" /></div>
+          <label className="check" style={{ height: 40, alignItems: 'center' }}>
+            <input type="checkbox" checked={fUnnec} onChange={e => setFUnnec(e.target.checked)} /> Unnecessary only</label>
+          {anyFilter && <button className="btn btn-ghost" style={{ height: 40, padding: '0 14px' }} onClick={clearFilters}>Clear</button>}
+        </div>
+        {anyFilter && <p className="sub" style={{ margin: '4px 0 0' }}>Showing {filtered.length} of {(data.expenses || []).length} · {INR(filteredTotal)}</p>}
+
         {(!data.expenses || data.expenses.length === 0) ? <div className="empty">No expenses logged for {fmtMonth(data.month_key)} yet.</div> :
+          filtered.length === 0 ? <div className="empty">No expenses match your filters.</div> :
           <table style={{ marginTop: 14 }}>
-            <thead><tr><th>Description</th><th>Category</th><th>Date</th><th style={{ textAlign: 'right' }}>Amount</th><th style={{ textAlign: 'center' }}>Unnecessary</th><th></th></tr></thead>
-            <tbody>{data.expenses.map(e => { const c = catById(CATS, e.category); return (
+            <thead><tr><th>Description</th><th>Category</th><th>Date</th><th style={{ textAlign: 'right' }}>Amount</th><th style={{ textAlign: 'center' }}>Unnec.</th><th style={{ textAlign: 'right', width: 90 }}></th></tr></thead>
+            <tbody>{filtered.map(e => { const c = catById(CATS, e.category)
+              if (editId === e.id) return (
+                <tr key={e.id}>
+                  <td><input value={edit.name} onChange={ev => setEdit(p => ({ ...p, name: ev.target.value }))} style={editStyle} /></td>
+                  <td><select value={edit.category} onChange={ev => setEdit(p => ({ ...p, category: ev.target.value }))} style={editStyle}>{CATS.map(cc => <option key={cc.id} value={cc.id}>{cc.name}</option>)}</select></td>
+                  <td><input type="date" value={edit.date} onChange={ev => setEdit(p => ({ ...p, date: ev.target.value }))} style={editStyle} /></td>
+                  <td><input type="number" value={edit.amount} onChange={ev => setEdit(p => ({ ...p, amount: ev.target.value }))} style={{ ...editStyle, textAlign: 'right' }} /></td>
+                  <td></td>
+                  <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                    <button className="icon-btn" onClick={() => saveEdit(e.id)} title="Save" style={{ color: 'var(--green)' }}>✓</button>
+                    <button className="icon-btn" onClick={cancelEdit} title="Cancel">✕</button></td>
+                </tr>)
+              return (
               <tr key={e.id}>
-                <td style={{ fontWeight: 500 }}>{e.name}{e.unnecessary && <span className="unnec-badge" style={{ marginLeft: 8 }}>⚠</span>}</td>
+                <td style={{ fontWeight: 500 }}>{e.name}{e.recurring && <span className="pill" style={{ marginLeft: 8, background: 'var(--gold-bg)', color: 'var(--gold)' }}>↻</span>}{e.unnecessary && <span className="unnec-badge" style={{ marginLeft: 8 }}>⚠</span>}</td>
                 <td><span className="tag" style={{ background: c.color + '22', color: c.color }}>{c.name}</span></td>
                 <td style={{ color: 'var(--muted)' }}>{new Date(e.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}</td>
                 <td style={{ textAlign: 'right', fontWeight: 500 }} className="num">{INR(e.amount)}</td>
                 <td style={{ textAlign: 'center' }}>
                   <input type="checkbox" checked={!!e.unnecessary} onChange={() => toggleUnnec(e.id)}
                     title="Mark this expense as unnecessary" style={{ width: 17, height: 17, accentColor: 'var(--red)', cursor: 'pointer' }} /></td>
-                <td style={{ textAlign: 'right' }}><button className="icon-btn" onClick={() => remove(e.id)} title="Delete">✕</button></td>
+                <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                  <button className="icon-btn" onClick={() => startEdit(e)} title="Edit">✎</button>
+                  <button className="icon-btn" onClick={() => remove(e.id)} title="Delete">✕</button></td>
               </tr>) })}
             </tbody>
           </table>}
@@ -450,8 +564,52 @@ function Reports() {
         <p className="sub">Your trend across all tracked months</p>
         {allMonths.length === 0 ? <div className="empty">Track a few months to see your trend line.</div> : <TrendChart months={allMonths} />}
       </div>
+      <MultiMonthTrends months={allMonths} />
     </div>
   )
+}
+function MultiMonthTrends({ months }) {
+  const [mode, setMode] = useState('stacked')
+  const [pick, setPick] = useState(CATS[0] ? CATS[0].id : 'rent')
+  if (months.length < 2) return (
+    <div className="card">
+      <h2>Spending trends over time</h2>
+      <p className="sub">Track at least two months to see how your categories move.</p>
+      <div className="empty">Not enough months yet.</div>
+    </div>
+  )
+  return (
+    <div className="card">
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
+        <div><h2>Spending trends over time</h2><p className="sub" style={{ margin: 0 }}>How your spending moves month to month</p></div>
+        <div className="seg">
+          <button className={mode === 'stacked' ? 'on' : ''} onClick={() => setMode('stacked')}>Total + breakdown</button>
+          <button className={mode === 'single' ? 'on' : ''} onClick={() => setMode('single')}>Single category</button>
+        </div>
+      </div>
+      {mode === 'single' && <div className="inline-field" style={{ maxWidth: 240, marginBottom: 14 }}>
+        <label>Category</label>
+        <select value={pick} onChange={e => setPick(e.target.value)}>{CATS.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
+      </div>}
+      {mode === 'stacked' ? <StackedCategoryTrend months={months} /> : <SingleCategoryTrend months={months} catId={pick} />}
+    </div>
+  )
+}
+function StackedCategoryTrend({ months }) {
+  const labels = months.map(m => fmtMonth(m.month_key).split(' ')[0].slice(0, 3) + " '" + m.month_key.slice(2, 4))
+  const ref = useChart(() => ({ type: 'bar',
+    data: { labels, datasets: CATS.map(c => ({ label: c.name, backgroundColor: c.color, data: months.map(m => (m.expenses || []).filter(e => e.category === c.id).reduce((s, e) => s + e.amount, 0)), stack: 's', borderWidth: 0 })) },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: legendCfg('top', 12), tooltip: { callbacks: { label: c => ' ' + c.dataset.label + ': ₹' + Math.round(c.raw).toLocaleString('en-IN') } } }, scales: { x: { stacked: true, grid: { display: false }, ticks: catTicks() }, y: { stacked: true, ticks: axTicks(), grid: { color: gridColor() } } } } }), [JSON.stringify(months.map(m => m.month_key))])
+  return <div style={{ position: 'relative', height: 320 }}><canvas ref={ref} role="img" aria-label="Stacked bar chart of category spending by month"></canvas></div>
+}
+function SingleCategoryTrend({ months, catId }) {
+  const c = catById(CATS, catId)
+  const labels = months.map(m => fmtMonth(m.month_key).split(' ')[0].slice(0, 3) + " '" + m.month_key.slice(2, 4))
+  const vals = months.map(m => (m.expenses || []).filter(e => e.category === catId).reduce((s, e) => s + e.amount, 0))
+  const ref = useChart(() => ({ type: 'line',
+    data: { labels, datasets: [{ label: c.name, data: vals, borderColor: c.color, backgroundColor: c.color + '2e', tension: .35, fill: true, borderWidth: 2.5, pointRadius: 3, pointBackgroundColor: c.color }] },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: legendCfg('top', 12), tooltip: { callbacks: { label: x => ' ₹' + Math.round(x.raw).toLocaleString('en-IN') } } }, scales: { y: { ticks: axTicks(), grid: { color: gridColor() } }, x: { grid: { display: false }, ticks: catTicks() } } } }), [JSON.stringify(months.map(m => m.month_key)), catId])
+  return <div style={{ position: 'relative', height: 300 }}><canvas ref={ref} role="img" aria-label={'Spending trend for ' + c.name}></canvas></div>
 }
 function Stat2(props) { return <div style={{ flex: '1 1 180px' }}><Stat {...props} /></div> }
 
@@ -477,6 +635,12 @@ function Settings() {
   const [currency, setCurrency] = useState(settings.currency)
   const [monthStart, setMonthStart] = useState(settings.monthStart || 1)
   const [defBud, setDefBud] = useState(() => { const o = {}; Object.keys(settings.defaultBudgets || {}).forEach(k => o[k] = String(settings.defaultBudgets[k])); return o })
+  // recurring expense templates
+  const [recurring, setRecurring] = useState(settings.recurring || [])
+  const [rName, setRName] = useState(''); const [rAmount, setRAmount] = useState(''); const [rCat, setRCat] = useState(cats[0] ? cats[0].id : 'rent')
+  // savings goals
+  const [goals, setGoals] = useState(settings.goals || [])
+  const [gName, setGName] = useState(''); const [gTarget, setGTarget] = useState('')
 
   const slug = s => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || ('cat' + Date.now())
   const addCat = () => { if (!newName.trim()) return; const id = slug(newName); if (cats.some(c => c.id === id)) { showToast('A category with a similar name already exists.', 'warn'); return } setCats([...cats, { id, name: newName.trim(), color: newColor }]); setNewName('') }
@@ -488,6 +652,14 @@ function Settings() {
   const saveCats = () => { saveSettings({ categories: cats }); showToast('Categories saved.') }
   const saveDefaults = () => { const o = {}; Object.keys(defBud).forEach(k => { const n = Number(defBud[k]); if (n > 0) o[k] = n }); saveSettings({ defaultBudgets: o }); showToast('Default budgets saved — they seed new months.') }
   const savePrefs = () => { saveSettings({ currency, monthStart: Number(monthStart), themeDefault: theme }); showToast('Preferences saved.') }
+
+  const addRecurring = () => { const amt = Number(rAmount); if (!rName.trim() || !amt) { showToast('Recurring needs a name and amount.', 'warn'); return } const next = [...recurring, { id: Date.now(), name: rName.trim(), amount: amt, category: rCat, unnecessary: false }]; setRecurring(next); saveSettings({ recurring: next }); setRName(''); setRAmount(''); showToast('Recurring expense saved — it seeds new months.') }
+  const removeRecurring = id => { const next = recurring.filter(r => r.id !== id); setRecurring(next); saveSettings({ recurring: next }); showToast('Recurring expense removed.') }
+
+  const addGoal = () => { const tgt = Number(gTarget); if (!gName.trim() || !tgt) { showToast('A goal needs a name and target amount.', 'warn'); return } const next = [...goals, { id: Date.now(), name: gName.trim(), target: tgt, saved: 0 }]; setGoals(next); saveSettings({ goals: next }); setGName(''); setGTarget(''); showToast('Savings goal added.') }
+  const updateGoalSaved = (id, val) => { const next = goals.map(g => g.id === id ? { ...g, saved: Number(val) || 0 } : g); setGoals(next) }
+  const commitGoals = () => { saveSettings({ goals }); showToast('Goals updated.') }
+  const removeGoal = id => { const next = goals.filter(g => g.id !== id); setGoals(next); saveSettings({ goals: next }); showToast('Goal removed.') }
 
   const fieldStyle = { height: 36, padding: '0 10px', border: '1px solid var(--line-2)', borderRadius: 8, background: 'var(--paper-2)', color: 'var(--ink)' }
   return (
@@ -534,6 +706,60 @@ function Settings() {
           </tbody>
         </table>
         <div style={{ textAlign: 'right', marginTop: 16 }}><button className="btn btn-primary" style={{ width: 'auto', padding: '0 22px' }} onClick={saveDefaults}>Save defaults</button></div>
+      </div>
+
+      <div className="card">
+        <h2>Recurring expenses</h2>
+        <p className="sub">Fixed monthly costs like rent, EMI, or subscriptions. These are added automatically when you open a new month.</p>
+        {recurring.length > 0 && <table style={{ marginBottom: 8 }}>
+          <thead><tr><th>Name</th><th>Category</th><th style={{ textAlign: 'right' }}>Amount</th><th style={{ width: 50 }}></th></tr></thead>
+          <tbody>{recurring.map(r => { const c = catById(cats, r.category); return (
+            <tr key={r.id}>
+              <td style={{ fontWeight: 500 }}>{r.name}</td>
+              <td><span className="tag" style={{ background: c.color + '22', color: c.color }}>{c.name}</span></td>
+              <td style={{ textAlign: 'right' }} className="num">{INR(r.amount)}</td>
+              <td style={{ textAlign: 'right' }}><button className="icon-btn" onClick={() => removeRecurring(r.id)} title="Remove">✕</button></td>
+            </tr>) })}
+          </tbody>
+        </table>}
+        <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          <div className="inline-field" style={{ flex: '2 1 180px' }}><label>Name</label>
+            <input value={rName} onChange={e => setRName(e.target.value)} placeholder="e.g. Rent" onKeyDown={e => e.key === 'Enter' && addRecurring()} /></div>
+          <div className="inline-field" style={{ width: 130 }}><label>Amount (₹)</label>
+            <input type="number" value={rAmount} onChange={e => setRAmount(e.target.value)} placeholder="0" onKeyDown={e => e.key === 'Enter' && addRecurring()} /></div>
+          <div className="inline-field" style={{ flex: '1 1 140px' }}><label>Category</label>
+            <select value={rCat} onChange={e => setRCat(e.target.value)}>{cats.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div>
+          <button className="btn btn-ghost" style={{ height: 40, padding: '0 16px' }} onClick={addRecurring}>+ Add</button>
+        </div>
+        <p style={{ fontSize: 12, color: 'var(--muted)', marginTop: 12 }}>Adding or removing here affects future months only; months you've already opened keep what they have. You can still edit or delete a seeded entry within any month.</p>
+      </div>
+
+      <div className="card">
+        <h2>Savings goals</h2>
+        <p className="sub">Set targets and track what you've put aside. Update the saved amount as you go.</p>
+        {goals.length > 0 && <div style={{ marginBottom: 14 }}>{goals.map(g => {
+          const pct = g.target > 0 ? Math.min(100, g.saved / g.target * 100) : 0; const done = g.saved >= g.target
+          return <div key={g.id} style={{ marginBottom: 16 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13.5, marginBottom: 5, gap: 10, flexWrap: 'wrap' }}>
+              <span style={{ fontWeight: 500 }}>{g.name}{done && <span className="pill" style={{ background: 'var(--green-bg)', color: 'var(--green)', marginLeft: 8 }}>REACHED</span>}</span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input type="number" value={g.saved} onChange={e => updateGoalSaved(g.id, e.target.value)} onBlur={commitGoals}
+                  style={{ width: 110, height: 32, padding: '0 8px', border: '1px solid var(--line-2)', borderRadius: 7, background: 'var(--paper-2)', color: 'var(--ink)', textAlign: 'right' }} />
+                <span className="num" style={{ color: 'var(--muted)' }}>/ {INR(g.target)}</span>
+                <button className="icon-btn" onClick={() => removeGoal(g.id)} title="Remove">✕</button>
+              </span>
+            </div>
+            <div className="bar-track" style={{ height: 10 }}><div className="bar-fill" style={{ width: pct + '%', background: done ? 'var(--green)' : 'var(--gold)' }}></div></div>
+            <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 4 }}>{done ? 'Goal reached 🎉' : `${INR(g.target - g.saved)} to go · ${Math.round(pct)}%`}</div>
+          </div>
+        })}</div>}
+        <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          <div className="inline-field" style={{ flex: '2 1 180px' }}><label>Goal name</label>
+            <input value={gName} onChange={e => setGName(e.target.value)} placeholder="e.g. Goa trip" onKeyDown={e => e.key === 'Enter' && addGoal()} /></div>
+          <div className="inline-field" style={{ width: 150 }}><label>Target (₹)</label>
+            <input type="number" value={gTarget} onChange={e => setGTarget(e.target.value)} placeholder="50000" onKeyDown={e => e.key === 'Enter' && addGoal()} /></div>
+          <button className="btn btn-ghost" style={{ height: 40, padding: '0 16px' }} onClick={addGoal}>+ Add goal</button>
+        </div>
       </div>
 
       <div className="card">
