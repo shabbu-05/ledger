@@ -355,6 +355,7 @@ function Expenses() {
   // filters
   const [q, setQ] = useState(''); const [fCat, setFCat] = useState('all'); const [fUnnec, setFUnnec] = useState(false)
   const [minAmt, setMinAmt] = useState(''); const [maxAmt, setMaxAmt] = useState('')
+  const [sort, setSort] = useState('date-desc')
   // bulk selection
   const [selected, setSelected] = useState([])
   const [bulkCat, setBulkCat] = useState('')
@@ -400,6 +401,13 @@ function Expenses() {
     if (minAmt && e.amount < Number(minAmt)) return false
     if (maxAmt && e.amount > Number(maxAmt)) return false
     return true
+  }).sort((a, b) => {
+    switch (sort) {
+      case 'date-asc': return a.date < b.date ? -1 : a.date > b.date ? 1 : 0
+      case 'amount-desc': return b.amount - a.amount
+      case 'amount-asc': return a.amount - b.amount
+      case 'date-desc': default: return a.date < b.date ? 1 : a.date > b.date ? -1 : 0
+    }
   })
   const filteredTotal = filtered.reduce((s, e) => s + e.amount, 0)
   const anyFilter = q || fCat !== 'all' || fUnnec || minAmt || maxAmt
@@ -460,6 +468,13 @@ function Expenses() {
             <input type="number" inputMode="decimal" value={minAmt} onChange={e => setMinAmt(e.target.value)} placeholder="0" /></div>
           <div className="inline-field" style={{ width: 110 }}><label>Max ₹</label>
             <input type="number" inputMode="decimal" value={maxAmt} onChange={e => setMaxAmt(e.target.value)} placeholder="∞" /></div>
+          <div className="inline-field" style={{ flex: '1 1 160px' }}><label>Sort by</label>
+            <select value={sort} onChange={e => setSort(e.target.value)}>
+              <option value="date-desc">Date — newest first</option>
+              <option value="date-asc">Date — oldest first</option>
+              <option value="amount-desc">Amount — high to low</option>
+              <option value="amount-asc">Amount — low to high</option>
+            </select></div>
           <label className="check" style={{ height: 40, alignItems: 'center' }}>
             <input type="checkbox" checked={fUnnec} onChange={e => setFUnnec(e.target.checked)} /> Unnecessary only</label>
           {anyFilter && <button className="btn btn-ghost" style={{ height: 40, padding: '0 14px' }} onClick={clearFilters}>Clear</button>}
